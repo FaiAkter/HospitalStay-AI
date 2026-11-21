@@ -93,28 +93,221 @@ def scenario_chart(key):
     st.dataframe(table.style.format({"Estimated days":"{:.2f}"}), use_container_width=True, hide_index=True)
 
 
-def demo_cohort():
-    """Create fictional input profiles, not source data or real patient records."""
-    return pd.DataFrame([
-        {"Demo ID":f"SIM-{idx:02d}", "rcount":str(r), "gender":g}
-        for idx,(r,g) in enumerate([
-            ("0","F"),("0","M"),("1","F"),("2","M"),
-            ("3","F"),("4","M"),("5+","F"),("5+","M")
-        ], start=1)
-    ])
+def nurse_board():
+    """An editable in-session board for fictional profiles only."""
+    st.subheader("Fictional ward board")
+    st.caption("Create, edit and delete demonstration profiles. Data are session-only, not clinical records.")
+    if "ward_profiles" not in st.session_state:
+        st.session_state.ward_profiles = [
+            {"Demo ID": "SIM-001", "rcount": "0", "gender": "M"},
+            {"Demo ID": "SIM-002", "rcount": "2", "gender": "F"},
+        ]
+    with st.form("add_ward_record", clear_on_submit=True):
+        st.markdown("**Add a fictional patient profile**")
+        a,b,c=st.columns(3)
+        new_id=a.text_input("Fictional ID", placeholder="SIM-003", max_chars=25)
+        new_r=b.selectbox("Readmissions in 180 days", categories["rcount"])
+        new_g=c.selectbox("Recorded gender category", categories["gender"])
+        add=st.form_submit_button("Add to board",type="primary")
+    if add:
+        new_id=new_id.strip()
+        if not new_id or any(x["Demo ID"]==new_id for x in st.session_state.ward_profiles):
+            st.error("Enter a nonempty, unique fictional ID.")
+        elif len(st.session_state.ward_profiles)>=100:
+            st.error("Demo limit of 100 profiles reached.")
+        else:
+            st.session_state.ward_profiles.append({"Demo ID":new_id,"rcount":new_r,"gender":new_g})
+            st.success("Fictional profile added.")
+    if st.session_state.ward_profiles:
+        current=pd.DataFrame(st.session_state.ward_profiles)
+        st.markdown("**Edit profiles directly in the table below**")
+        edited=st.data_editor(current,hide_index=True,use_container_width=True,num_rows="fixed",
+            column_config={
+                "Demo ID": st.column_config.TextColumn("Fictional ID",required=True),
+                "rcount": st.column_config.SelectboxColumn("Readmissions",options=categories["rcount"],required=True),
+                "gender": st.column_config.SelectboxColumn("Gender",options=categories["gender"],required=True),
+            },key="ward_editor")
+        if st.button("Save edited profiles"):
+            entries=edited.to_dict("records")
+            ids=[str(x["Demo ID"]).strip() for x in entries]
+            if not all(ids) or len(set(ids))!=len(ids):
+                st.error("Every fictional ID must be nonempty and unique.")
+            else:
+                try:
+                    predict(entries)
+                    st.session_state.ward_profiles=[{"Demo ID":ids[i],"rcount":str(x["rcount"]),"gender":str(x["gender"])} for i,x in enumerate(entries)]
+                    st.success("Changes saved. Estimates recalculated below.")
+                except Exception:
+                    st.error("Invalid entry: choose supported input categories.")
+        table=pd.DataFrame(st.session_state.ward_profiles)
+        table["Estimated stay (days)"]=predict(table[["rcount","gender"]].to_dict("records"))
+        c1,c2,c3=st.columns(3)
+        c1.metric("Demo profiles",len(table))
+        c2.metric("Mean estimated stay",f"{table['Estimated stay (days)'].mean():.2f} days")
+        c3.metric("Sum of estimated bed-days",f"{table['Estimated stay (days)'].sum():.1f}")
+        st.dataframe(table.style.format({"Estimated stay (days)":"{:.2f}"}),hide_index=True,use_container_width=True)
+        st.bar_chart(table.set_index("Demo ID")["Estimated stay (days)"])
+        to_remove=st.selectbox("Remove fictional profile",table["Demo ID"].tolist())
+        if st.button("Remove selected profile"):
+            st.session_state.ward_profiles=[x for x in st.session_state.ward_profiles if x["Demo ID"]!=to_remove]
+            st.rerun()
+        csv=table.to_csv(index=False).encode("utf-8")
+        st.download_button("Download simulated ward table (CSV)",csv,"hospitalstay_demo_ward.csv","text/csv")
+    else:
+        st.info("Your demonstration board is empty. Add a fictional profile above.")
+    st.warning("These estimates cannot assess patient needs, staffing requirements, discharge readiness, or real bed capacity. Do not enter real patient data.")
 
 
-def show_cohort(label):
-    st.subheader(label)
-    st.warning("These are eight fictional demonstration profiles. They are not real patients, hospital admissions, or a validated bed-capacity forecast.")
-    cohort = demo_cohort()
-    cohort["Estimated stay (days)"] = predict(cohort[["rcount","gender"]].to_dict("records"))
-    c1,c2 = st.columns(2)
-    c1.metric("Fictional demo profiles", str(len(cohort)))
-    c2.metric("Mean estimate across demo profiles", f"{cohort['Estimated stay (days)'].mean():.2f} days")
-    st.dataframe(cohort.style.format({"Estimated stay (days)":"{:.2f}"}), hide_index=True, use_container_width=True)
-    st.bar_chart(cohort.set_index("Demo ID")["Estimated stay (days)"])
-    st.caption("These figures compare modeled outputs; they cannot determine clinical priorities, staffing requirements or actual bed occupancy.")
+def doctor_workspace():
+    """In-session fictional case register and model interpretation for the Doctor view."""
+    st.subheader("Case workspace — hypothetical patients")
+    st.caption("Create and compare fictional cases. This is not an electronic health record or a tool for clinical decisions.")
+    state_key = "doctor_cases"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = [
+            {"Case ID": "CASE-001", "rcount": "0", "gender": "M"},
+            {"Case ID": "CASE-002", "rcount": "2", "gender": "F"},
+        ]
+
+    with st.form("doctor_add_case", clear_on_submit=True):
+        st.markdown("**Create a fictional case**")
+        col1, col2, col3 = st.columns(3)
+        case_id = col1.text_input("Fictional case ID", placeholder="CASE-003", max_chars=25)
+        readmissions = col2.selectbox("Previous readmissions", categories["rcount"], key="doc_add_r")
+        gender = col3.selectbox("Recorded gender category", categories["gender"], key="doc_add_g")
+        add_case = st.form_submit_button("Add case", type="primary")
+    if add_case:
+        case_id = case_id.strip()
+        if not case_id or any(case_id == x["Case ID"] for x in st.session_state[state_key]):
+            st.error("Use a nonempty, unique fictional case ID.")
+        elif len(st.session_state[state_key]) >= 100:
+            st.error("Demo limit of 100 fictional cases reached.")
+        else:
+            st.session_state[state_key].append({"Case ID":case_id, "rcount":readmissions, "gender":gender})
+            st.success("Fictional case added.")
+            st.rerun()
+
+    if not st.session_state[state_key]:
+        st.info("No cases yet. Add a fictional case to begin.")
+        return
+
+    # Editing is explicit; unsaved data editor values are not used for predictions.
+    current = pd.DataFrame(st.session_state[state_key])
+    st.markdown("**Edit cases**")
+    edited = st.data_editor(
+        current, hide_index=True, use_container_width=True, num_rows="fixed", key="doctor_case_editor",
+        column_config={
+            "Case ID": st.column_config.TextColumn("Fictional case ID", required=True),
+            "rcount": st.column_config.SelectboxColumn("Previous readmissions", options=categories["rcount"], required=True),
+            "gender": st.column_config.SelectboxColumn("Recorded gender", options=categories["gender"], required=True),
+        },
+    )
+    if st.button("Save case edits", key="save_doctor_edits"):
+        entries = edited.to_dict("records")
+        ids = [str(v["Case ID"]).strip() for v in entries]
+        if not all(ids) or len(set(ids)) != len(ids):
+            st.error("All case IDs must be nonempty and unique.")
+        else:
+            try:
+                cleaned = [
+                    {"Case ID":ids[i], "rcount":str(v["rcount"]), "gender":str(v["gender"])}
+                    for i, v in enumerate(entries)
+                ]
+                predict(cleaned)
+                st.session_state[state_key] = cleaned
+                st.success("Case edits saved.")
+                st.rerun()
+            except (ValueError, TypeError):
+                st.error("Use only supported readmission and gender categories.")
+            except Exception:
+                st.error("The model could not validate the modified cases.")
+
+    records = pd.DataFrame(st.session_state[state_key])
+    try:
+        records["Estimated stay (days)"] = predict(records[["rcount", "gender"]].to_dict("records"))
+    except Exception:
+        st.error("Unable to predict the fictional cases. Check the saved model.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Fictional cases", len(records))
+    c2.metric("Mean predicted stay", f"{records['Estimated stay (days)'].mean():.2f} days")
+    c3.metric("5-fold CV MAE", "1.230 days", help="Training-data cross-validation mean MAE for the two-feature model; not a case-specific confidence interval")
+    st.dataframe(records.style.format({"Estimated stay (days)":"{:.2f}"}), use_container_width=True, hide_index=True)
+
+    st.subheader("Compare two cases")
+    if len(records) >= 2:
+        a, b = st.columns(2)
+        ids = records["Case ID"].tolist()
+        first = a.selectbox("First case", ids, index=0, key="doc_comp_first")
+        second = b.selectbox("Second case", ids, index=1, key="doc_comp_second")
+        if first == second:
+            st.info("Choose two different cases to compare their model estimates.")
+        else:
+            comparison = records[records["Case ID"].isin([first, second])].copy()
+            st.bar_chart(comparison.set_index("Case ID")["Estimated stay (days)"])
+            comparison = comparison.set_index("Case ID")
+            delta = float(comparison.loc[first, "Estimated stay (days)"] - comparison.loc[second, "Estimated stay (days)"])
+            st.write(f"Difference in model estimates: **{abs(delta):.2f} days**.")
+            st.caption("Differences are model associations, not evidence that any input causes a longer or shorter stay.")
+    else:
+        st.info("Add at least two fictional cases to compare them.")
+
+    st.subheader("Manage cases")
+    left, right = st.columns([2, 1])
+    remove_id = left.selectbox("Select case to remove", records["Case ID"].tolist(), key="doc_remove")
+    if right.button("Remove selected case", key="doc_delete"):
+        st.session_state[state_key] = [x for x in st.session_state[state_key] if x["Case ID"] != remove_id]
+        st.rerun()
+    st.download_button(
+        "Download fictional case results (CSV)",
+        records.to_csv(index=False).encode("utf-8"),
+        file_name="hospitalstay_doctor_demo_cases.csv", mime="text/csv", key="doc_export"
+    )
+
+    with st.expander("Model interpretation and evidence"):
+        st.markdown("**Deployed model:** Gradient Boosting with two input categories (`rcount`, `gender`).")
+        st.write("Its 5-fold cross-validation mean MAE on synthetic training data was **1.230 days** (SD 0.029). This is a dataset-level error estimate, not a personal uncertainty interval.")
+        st.write("The eight-feature research models performed better, but used clinical-condition flags whose availability at admission could not be established. Their test metrics must not be presented as those of this deployed model.")
+        st.write("Only readmission history and recorded gender are modeled; severity, treatments, symptoms and clinical status are not measured.")
+    st.warning("All cases must be fictional. Do not enter real identifiers or use these outputs for medical decisions or discharge planning.")
+
+
+def administrator_planner():
+    """Aggregate hypothetical admissions by category without patient data."""
+    st.subheader("Configurable admission scenario")
+    st.write("Set counts of **fictional arrivals** for each input category. The model estimates length of stay for each category, then totals the modeled bed-days. This is not an occupancy forecast.")
+    scenario=[]
+    with st.form("admin_scenario"):
+        st.markdown("**Number of hypothetical arrivals by readmission category and gender**")
+        for r in categories["rcount"]:
+            c1,c2=st.columns(2)
+            for col,g in [(c1,"F"),(c2,"M")]:
+                count=col.number_input(f"Readmissions {r}, category {g}",min_value=0,max_value=1000,value=(3 if r=="0" else 0),step=1,key=f"admin_{r}_{g}")
+                scenario.append({"rcount":r,"gender":g,"count":int(count)})
+        submit=st.form_submit_button("Calculate simulated planning estimates",type="primary")
+    if submit:
+        st.session_state.admin_scenario_results=scenario
+    if "admin_scenario_results" in st.session_state:
+        table=pd.DataFrame(st.session_state.admin_scenario_results)
+        estimates=predict(table[["rcount","gender"]].to_dict("records"))
+        table["Estimated stay (days)"]=estimates
+        table["Estimated bed-days"]=table["count"]*table["Estimated stay (days)"]
+        table=table.loc[table["count"]>0].copy()
+        if table.empty:
+            st.info("Add at least one hypothetical arrival to calculate results.")
+        else:
+            n=int(table["count"].sum())
+            total=float(table["Estimated bed-days"].sum())
+            c1,c2,c3=st.columns(3)
+            c1.metric("Fictional arrivals",n)
+            c2.metric("Sum of model-estimated bed-days",f"{total:.1f}")
+            c3.metric("Mean estimated stay",f"{total/n:.2f} days")
+            st.dataframe(table.style.format({"Estimated stay (days)":"{:.2f}","Estimated bed-days":"{:.2f}"}),hide_index=True,use_container_width=True)
+            chart=table.groupby("rcount",sort=False)["Estimated bed-days"].sum().rename("Modeled bed-days")
+            st.bar_chart(chart)
+            st.download_button("Download scenario results (CSV)",table.to_csv(index=False).encode("utf-8"),"hospitalstay_demo_scenario.csv","text/csv")
+    st.warning("Summed model estimates are not a validated prediction of hospital occupancy, staffing, or actual bed availability. No real admissions are used.")
 
 
 st.title("🏥 HospitalStay AI")
@@ -139,24 +332,25 @@ if role == "Patient":
         st.write("For individual questions about hospitalization, speak with your healthcare team.")
 
 elif role == "Doctor":
-    st.header("Doctor view — model interpretation")
-    st.write("Review the same experimental model with technical context. It uses **only two categorical inputs**; it does not assess medical severity or discharge readiness.")
-    single_form("doctor")
-    st.subheader("Hypothetical scenario comparison")
-    scenario_chart("doctor_compare")
-    st.info("Model performance: the deployed two-feature Gradient Boosting model achieved a 5-fold cross-validation MAE of 1.230 days (SD 0.029) on synthetic training data. This is not a clinical confidence interval.")
+    st.header("Doctor view — case comparison and interpretation")
+    st.write("A fictional case workspace for comparing predictions and reviewing technical model evidence. This does not assess clinical severity or discharge readiness.")
+    doctor_workspace()
+    with st.expander("Quick individual prediction"):
+        single_form("doctor")
+    with st.expander("Compare readmission categories"):
+        scenario_chart("doctor_compare")
 
 elif role == "Nurse":
     st.header("Nurse view — demonstration coordination board")
-    st.write("Compare modeled length-of-stay estimates for fictional profiles. No care tasks, escalation priorities, or discharge instructions are generated.")
-    show_cohort("Simulated patient board")
+    st.write("Build an editable board of fictional profiles, compare modeled stays, and export simulation results. No care tasks or discharge instructions are generated.")
+    nurse_board()
     with st.expander("Individual example"):
         single_form("nurse")
 
 elif role == "Hospital administrator":
     st.header("Administrator view — research analytics")
-    st.write("Explore scenario outputs and the study methodology. These are educational simulations, not validated hospital demand forecasts.")
-    show_cohort("Hypothetical portfolio of profiles")
+    st.write("Create hypothetical admission mixes and compare aggregate model estimates. These are educational simulations, not validated hospital demand forecasts.")
+    administrator_planner()
     st.subheader("Readmission scenario comparison")
     scenario_chart("admin_compare")
 
